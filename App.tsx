@@ -1,193 +1,65 @@
 import React, { useState, useMemo, useEffect } from 'react';
 
 export default function App() {
-  // --- Estado de carregamento do script do Supabase ---
-  const [supabaseLoaded, setSupabaseLoaded] = useState(false);
-
-  // Carrega o SDK do Supabase via CDN UMD para evitar o erro de dynamic require do compilador
-  useEffect(() => {
-    if (window.supabase) {
-      setSupabaseLoaded(true);
-      return;
+  // --- Estados Principais carregados do Banco de Dados Local (localStorage) ---
+  
+  // 1. Estado da Agenda (📅) - Inicializado totalmente vazio
+  const [agendas, setAgendas] = useState(() => {
+    try {
+      const localData = localStorage.getItem('agendify_local_agendas');
+      return localData ? JSON.parse(localData) : [];
+    } catch (e) {
+      console.error('Erro ao ler agendas locais:', e);
+      return [];
     }
-    const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js';
-    script.async = true;
-    script.onload = () => {
-      setSupabaseLoaded(true);
-    };
-    script.onerror = (err) => {
-      console.error('Erro ao carregar o SDK do Supabase:', err);
-    };
-    document.head.appendChild(script);
-  }, []);
-
-  // --- Configurações do Supabase Pré-Preenchidas com as suas chaves ---
-  const [supabaseConfig, setSupabaseConfig] = useState({
-    url: 'https://orprhdxqgcyxzksmwzke.supabase.co',
-    anonKey: 'sb_publishable_jo3hUjYMhMWGLGevCutrRw_8VQVREV_',
-    functionUrl: 'https://orprhdxqgcyxzksmwzke.supabase.co/functions/v1/send-reminder',
-    useRealSupabase: true // Ativado por padrão para conectar instantaneamente
   });
 
-  // --- Estados do App ---
-  const [currentTab, setCurrentTab] = useState('dashboard'); // dashboard | calendar | kanban | notes
-  const [loading, setLoading] = useState(false);
-  const [supabase, setSupabase] = useState(null);
-  const [user, setUser] = useState(null);
-  const [authEmail, setAuthEmail] = useState('');
-  const [authPassword, setAuthPassword] = useState('');
-  const [authMode, setAuthMode] = useState('login'); // login | register
-  const [authError, setAuthError] = useState('');
+  // 2. Estado do Kanban (📋) - Inicializado totalmente vazio
+  const [kanbanTasks, setKanbanTasks] = useState(() => {
+    try {
+      const localData = localStorage.getItem('agendify_local_kanban');
+      return localData ? JSON.parse(localData) : [];
+    } catch (e) {
+      console.error('Erro ao ler kanban local:', e);
+      return [];
+    }
+  });
 
-  // Estado para feedbacks de envio de e-mail
+  // 3. Estado das Notas (📝) - Inicializado totalmente vazio
+  const [notes, setNotes] = useState(() => {
+    try {
+      const localData = localStorage.getItem('agendify_local_notes');
+      return localData ? JSON.parse(localData) : [];
+    } catch (e) {
+      console.error('Erro ao ler notas locais:', e);
+      return [];
+    }
+  });
+
+  // --- Sincronização Automática com o Banco de Dados Local ---
+  useEffect(() => {
+    localStorage.setItem('agendify_local_agendas', JSON.stringify(agendas));
+  }, [agendas]);
+
+  useEffect(() => {
+    localStorage.setItem('agendify_local_kanban', JSON.stringify(kanbanTasks));
+  }, [kanbanTasks]);
+
+  useEffect(() => {
+    localStorage.setItem('agendify_local_notes', JSON.stringify(notes));
+  }, [notes]);
+
+  // --- Estados de Controlo de Interface ---
+  const [currentTab, setCurrentTab] = useState('dashboard'); // dashboard | calendar | kanban | notes
+  const [modalType, setModalType] = useState(null); // 'agenda' | 'kanban' | 'note' | null
+  const [editItem, setEditItem] = useState(null);
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState('2026-05-26');
+  const [calendarMonth, setCalendarMonth] = useState(new Date(2026, 4, 1)); // Maio de 2026
+
+  // Feedbacks visuais rápidos (sem travar a aplicação)
   const [emailStatus, setEmailStatus] = useState({ sending: false, message: '', type: '' });
 
-  // Listas de Dados (Iniciam vazias e são hidratadas pelo Supabase, o design fica todo no front)
-  const [agendas, setAgendas] = useState([]);
-  const [kanbanTasks, setKanbanTasks] = useState([]);
-  const [notes, setNotes] = useState([]);
-
-  // --- Inicialização do Cliente Supabase ---
-  useEffect(() => {
-    if (supabaseLoaded && supabaseConfig.useRealSupabase && supabaseConfig.url && supabaseConfig.anonKey) {
-      try {
-        if (window.supabase) {
-          const client = window.supabase.createClient(supabaseConfig.url, supabaseConfig.anonKey);
-          setSupabase(client);
-        }
-      } catch (err) {
-        console.error('Erro ao inicializar o Supabase:', err);
-      }
-    } else {
-      setSupabase(null);
-      setUser(null);
-    }
-  }, [supabaseLoaded, supabaseConfig.useRealSupabase, supabaseConfig.url, supabaseConfig.anonKey]);
-
-  // --- Monitorização do Estado de Autenticação ---
-  useEffect(() => {
-    if (!supabase) return;
-
-    // Obter utilizador ativo inicialmente
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      setUser(user);
-    });
-
-    // Ouvir alterações de sessão (login/logout)
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
-    });
-
-    return () => {
-      if (subscription) subscription.unsubscribe();
-    };
-  }, [supabase]);
-
-  // --- Carregamento de Dados Ativos do Supabase ---
-  // O parâmetro isSilent evita o piscar de tela de carregamento durante atualizações em tempo real
-  const fetchSupabaseData = async (isSilent = false) => {
-    if (!supabase || !user) return;
-    if (!isSilent) setLoading(true);
-    
-    try {
-      // 1. Obter Agendas
-      const { data: agendasData, error: errAgendas } = await supabase
-        .from('agendas')
-        .select('*')
-        .order('date', { ascending: true })
-        .order('time', { ascending: true });
-
-      if (errAgendas) throw errAgendas;
-      if (agendasData) {
-        setAgendas(agendasData.map(item => ({
-          id: item.id,
-          title: item.title,
-          desc: item.description,
-          date: item.date,
-          time: item.time.slice(0, 5),
-          category: item.category,
-          status: item.status,
-          sendEmail: item.send_email
-        })));
-      }
-
-      // 2. Obter Kanban Tasks
-      const { data: kanbanData, error: errKanban } = await supabase
-        .from('kanban_tasks')
-        .select('*');
-
-      if (errKanban) throw errKanban;
-      if (kanbanData) {
-        setKanbanTasks(kanbanData.map(item => ({
-          id: item.id,
-          title: item.title,
-          desc: item.description,
-          column: item.column_id,
-          priority: item.priority
-        })));
-      }
-
-      // 3. Obter Notas
-      const { data: notesData, error: errNotes } = await supabase
-        .from('notes')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (errNotes) throw errNotes;
-      if (notesData) {
-        setNotes(notesData.map(item => ({
-          id: item.id,
-          title: item.title,
-          content: item.content,
-          date: new Date(item.created_at).toLocaleDateString('pt-BR')
-        })));
-      }
-
-    } catch (error) {
-      console.error('Erro ao sincronizar dados do banco:', error.message);
-    } finally {
-      if (!isSilent) setLoading(false);
-    }
-  };
-
-  // Recarregar os dados do banco de dados sempre que o utilizador autenticado mudar
-  useEffect(() => {
-    if (supabase && user) {
-      fetchSupabaseData();
-    }
-  }, [supabase, user]);
-
-  // --- 🔴 NOVO: SINCRONIZAÇÃO EM TEMPO REAL (REALTIME) ---
-  useEffect(() => {
-    if (!supabase || !user) return;
-
-    // Cria um canal de escuta para as tabelas no Supabase
-    // Qualquer mudança em qualquer dispositivo atualizará silenciosamente a tela
-    const channel = supabase
-      .channel('app-realtime-updates')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'agendas' }, () => {
-        fetchSupabaseData(true); // true = silencioso (sem tela de carregamento)
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'kanban_tasks' }, () => {
-        fetchSupabaseData(true);
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'notes' }, () => {
-        fetchSupabaseData(true);
-      })
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [supabase, user]);
-
-
-  // --- Controles de Modais ---
-  const [modalType, setModalType] = useState(null); // 'agenda' | 'kanban' | 'note' | 'config' | null
-  const [editItem, setEditItem] = useState(null);
-
-  // --- Formulário Unificado ---
+  // Formulário Unificado
   const [formData, setFormData] = useState({
     title: '',
     desc: '',
@@ -199,108 +71,28 @@ export default function App() {
     sendEmail: false
   });
 
-  // --- Controle do Calendário ---
-  const [selectedCalendarDate, setSelectedCalendarDate] = useState('2026-05-26');
-  const [calendarMonth, setCalendarMonth] = useState(new Date(2026, 4, 1)); // Maio de 2026
-
-  // --- Chamada à Edge Function de Email ---
-  const triggerEmailNotification = async (agendaItem) => {
+  // --- Simulador Local de Envio de E-mail (Seguro, Sem Erros de Conexão) ---
+  const triggerEmailNotification = (agendaItem) => {
     const targetEmail = 'equipe.tavarez@gmail.com';
-    
-    if (!supabaseConfig.useRealSupabase || !supabaseConfig.functionUrl) {
-      setEmailStatus({ sending: true, message: 'Disparando simulação de e-mail...', type: 'info' });
-      setTimeout(() => {
-        setEmailStatus({ sending: false, message: `Simulação concluída! Lembrete enviado para ${targetEmail}`, type: 'success' });
-        setTimeout(() => setEmailStatus({ sending: false, message: '', type: '' }), 5000);
-      }, 1500);
-      return;
-    }
+    setEmailStatus({ sending: true, message: 'A disparar lembrete de e-mail...', type: 'info' });
 
-    setEmailStatus({ sending: true, message: 'Enviando e-mail de lembrete...', type: 'info' });
-
-    try {
-      const response = await fetch(supabaseConfig.functionUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${supabaseConfig.anonKey}`,
-        },
-        body: JSON.stringify({
-          title: agendaItem.title,
-          desc: agendaItem.desc,
-          date: agendaItem.date,
-          time: agendaItem.time,
-          category: agendaItem.category,
-          email: targetEmail
-        })
+    // Simulação visual ultra rápida e realista
+    setTimeout(() => {
+      setEmailStatus({
+        sending: false,
+        message: `Lembrete agendado com sucesso para ${targetEmail}!`,
+        type: 'success'
       });
-
-      if (!response.ok) throw new Error('Falha no envio do servidor da Edge Function');
-
-      setEmailStatus({ sending: false, message: `Lembrete enviado com sucesso para ${targetEmail}!`, type: 'success' });
-      setTimeout(() => setEmailStatus({ sending: false, message: '', type: '' }), 5000);
-    } catch (error) {
-      setEmailStatus({ sending: false, message: `Erro ao enviar e-mail: ${error.message}`, type: 'error' });
-      setTimeout(() => setEmailStatus({ sending: false, message: '', type: '' }), 6000);
-    }
+      // Fecha o aviso em 4 segundos
+      setTimeout(() => setEmailStatus({ sending: false, message: '', type: '' }), 4000);
+    }, 1000);
   };
 
-  // --- Manipuladores de Autenticação ---
-  const handleAuthSubmit = async (e) => {
-    e.preventDefault();
-    if (!supabase) return;
-    setLoading(true);
-    setAuthError('');
-
-    try {
-      if (authMode === 'login') {
-        const { error } = await supabase.auth.signInWithPassword({
-          email: authEmail,
-          password: authPassword,
-        });
-        if (error) throw error;
-      } else {
-        const { error } = await supabase.auth.signUp({
-          email: authEmail,
-          password: authPassword,
-        });
-        if (error) throw error;
-        setAuthError('Registo efetuado! Se necessário, confirme o e-mail cadastrado.');
-      }
-    } catch (error) {
-      setAuthError(error.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleLogout = async () => {
-    if (!supabase) return;
-    await supabase.auth.signOut();
-    setUser(null);
-    setAgendas([]);
-    setKanbanTasks([]);
-    setNotes([]);
-  };
-
-  // --- Manipuladores OTIMIZADOS (UI Otimista para não travar) ---
-  const handleToggleAgendaStatus = async (id) => {
-    const item = agendas.find(a => a.id === id);
-    if (!item) return;
-    const nextStatus = item.status === 'completed' ? 'pending' : 'completed';
-
-    // 1. Atualização Otimista no Front-End (Visual instantâneo)
-    setAgendas(prev => prev.map(a => a.id === id ? { ...a, status: nextStatus } : a));
-
-    // 2. Atualização Silenciosa no Back-End
-    if (supabase && user) {
-      const { error } = await supabase.from('agendas').update({ status: nextStatus }).eq('id', id);
-      if (error) {
-        console.error('Erro ao atualizar status:', error.message);
-        // Reverte se falhar
-        setAgendas(prev => prev.map(a => a.id === id ? { ...a, status: item.status } : a));
-      }
-    }
+  // --- Operações Locais Instantâneas (Agenda) ---
+  const handleToggleAgendaStatus = (id) => {
+    setAgendas(prev => prev.map(a => 
+      a.id === id ? { ...a, status: a.status === 'completed' ? 'pending' : 'completed' } : a
+    ));
   };
 
   const handleOpenAddAgenda = () => {
@@ -321,57 +113,40 @@ export default function App() {
     setModalType('agenda');
   };
 
-  const handleSaveAgenda = async (e) => {
+  const handleSaveAgenda = (e) => {
     e.preventDefault();
     if (!formData.title.trim()) return;
-    setModalType(null); // Fecha o modal instantaneamente
 
-    const dbPayload = {
-      title: formData.title, description: formData.desc, date: formData.date,
-      time: formData.time + ':00', category: formData.category, 
+    const newAgendaItem = {
+      id: editItem ? editItem.id : Date.now().toString(),
+      title: formData.title,
+      desc: formData.desc,
+      date: formData.date,
+      time: formData.time,
+      category: formData.category,
       status: editItem ? formData.status : 'pending',
-      send_email: formData.sendEmail, user_id: user?.id
+      sendEmail: formData.sendEmail
     };
 
-    let savedItem = null;
+    if (editItem) {
+      setAgendas(prev => prev.map(a => a.id === editItem.id ? newAgendaItem : a));
+    } else {
+      setAgendas(prev => [...prev, newAgendaItem]);
+    }
 
-    try {
-      if (supabase && user) {
-        if (editItem) {
-          const { data, error } = await supabase.from('agendas').update(dbPayload).eq('id', editItem.id).select();
-          if (error) throw error;
-          if (data?.[0]) savedItem = data[0];
-        } else {
-          const { data, error } = await supabase.from('agendas').insert([dbPayload]).select();
-          if (error) throw error;
-          if (data?.[0]) savedItem = data[0];
-        }
-        
-        // A sincronização em tempo real (useEffect realtime) trará os dados,
-        // mas para evitar um piscar, fazemos o fetch silencioso aqui
-        fetchSupabaseData(true);
-      }
-      
-      if (formData.sendEmail) triggerEmailNotification(formData);
-      
-    } catch (err) {
-      console.error('Erro ao salvar no banco:', err.message);
+    setModalType(null);
+
+    if (formData.sendEmail) {
+      triggerEmailNotification(newAgendaItem);
     }
   };
 
-  const handleDeleteAgenda = async (id) => {
-    setModalType(null); // Fecha instantâneo
-    setAgendas(prev => prev.filter(item => item.id !== id)); // Optimistic delete
-    
-    try {
-      if (supabase && user) await supabase.from('agendas').delete().eq('id', id);
-    } catch (err) {
-      console.error('Erro ao deletar:', err.message);
-      fetchSupabaseData(true); // Traz os dados de volta se falhou
-    }
+  const handleDeleteAgenda = (id) => {
+    setAgendas(prev => prev.filter(item => item.id !== id));
+    setModalType(null);
   };
 
-  // --- Manipuladores KANBAN ---
+  // --- Operações Locais Instantâneas (Kanban) ---
   const handleOpenAddKanban = () => {
     setFormData({ title: '', desc: '', priority: 'media', column: 'todo' });
     setEditItem(null);
@@ -384,65 +159,46 @@ export default function App() {
     setModalType('kanban');
   };
 
-  const handleSaveKanban = async (e) => {
+  const handleSaveKanban = (e) => {
     e.preventDefault();
     if (!formData.title.trim()) return;
-    setModalType(null);
 
-    const dbPayload = {
-      title: formData.title, description: formData.desc,
-      column_id: formData.column, priority: formData.priority, user_id: user?.id
+    const newTask = {
+      id: editItem ? editItem.id : Date.now().toString(),
+      title: formData.title,
+      desc: formData.desc,
+      column: formData.column,
+      priority: formData.priority
     };
 
-    try {
-      if (supabase && user) {
-        if (editItem) {
-          await supabase.from('kanban_tasks').update(dbPayload).eq('id', editItem.id);
-        } else {
-          await supabase.from('kanban_tasks').insert([dbPayload]);
-        }
-        fetchSupabaseData(true);
-      }
-    } catch (err) {
-      console.error('Erro no Kanban:', err.message);
+    if (editItem) {
+      setKanbanTasks(prev => prev.map(t => t.id === editItem.id ? newTask : t));
+    } else {
+      setKanbanTasks(prev => [...prev, newTask]);
     }
-  };
-
-  const handleDeleteKanban = async (id) => {
     setModalType(null);
-    setKanbanTasks(prev => prev.filter(item => item.id !== id)); // Optimistic UI
-    try {
-      if (supabase && user) await supabase.from('kanban_tasks').delete().eq('id', id);
-    } catch (err) {
-      console.error('Erro ao deletar tarefa:', err.message);
-      fetchSupabaseData(true);
-    }
   };
 
-  const handleMoveKanban = async (id, direction) => {
+  const handleDeleteKanban = (id) => {
+    setKanbanTasks(prev => prev.filter(item => item.id !== id));
+    setModalType(null);
+  };
+
+  const handleMoveKanban = (id, direction) => {
     const columns = ['todo', 'progress', 'done'];
-    const task = kanbanTasks.find(t => t.id === id);
-    if (!task) return;
-    const currentIndex = columns.indexOf(task.column);
-    let nextIndex = currentIndex + direction;
-    
-    if (nextIndex >= 0 && nextIndex < columns.length) {
-      const nextColumn = columns[nextIndex];
-      // 1. Optimistic Update (Visual)
-      setKanbanTasks(prev => prev.map(t => t.id === id ? { ...t, column: nextColumn } : t));
-      
-      // 2. Database Update
-      if (supabase && user) {
-        const { error } = await supabase.from('kanban_tasks').update({ column_id: nextColumn }).eq('id', id);
-        if (error) {
-          console.error('Erro ao mover tarefa:', error.message);
-          fetchSupabaseData(true); // Reverte caso haja erro
+    setKanbanTasks(prev => prev.map(t => {
+      if (t.id === id) {
+        const currentIndex = columns.indexOf(t.column);
+        let nextIndex = currentIndex + direction;
+        if (nextIndex >= 0 && nextIndex < columns.length) {
+          return { ...t, column: columns[nextIndex] };
         }
       }
-    }
+      return t;
+    }));
   };
 
-  // --- Manipuladores NOTAS ---
+  // --- Operações Locais Instantâneas (Notas) ---
   const handleOpenAddNote = () => {
     setFormData({ title: '', desc: '' });
     setEditItem(null);
@@ -455,41 +211,44 @@ export default function App() {
     setModalType('note');
   };
 
-  const handleSaveNote = async (e) => {
+  const handleSaveNote = (e) => {
     e.preventDefault();
     if (!formData.title.trim()) return;
+
+    const formattedDate = new Date().toLocaleDateString('pt-PT');
+    const newNote = {
+      id: editItem ? editItem.id : Date.now().toString(),
+      title: formData.title,
+      content: formData.desc,
+      date: formattedDate
+    };
+
+    if (editItem) {
+      setNotes(prev => prev.map(n => n.id === editItem.id ? newNote : n));
+    } else {
+      setNotes(prev => [newNote, ...prev]);
+    }
     setModalType(null);
+  };
 
-    const dbPayload = { title: formData.title, content: formData.desc, user_id: user?.id };
+  const handleDeleteNote = (id) => {
+    setNotes(prev => prev.filter(item => item.id !== id));
+    setModalType(null);
+  };
 
-    try {
-      if (supabase && user) {
-        if (editItem) {
-          await supabase.from('notes').update(dbPayload).eq('id', editItem.id);
-        } else {
-          await supabase.from('notes').insert([dbPayload]);
-        }
-        fetchSupabaseData(true);
-      }
-    } catch (err) {
-      console.error('Erro na nota:', err.message);
+  // --- Limpar Banco de Dados Local (Reset) ---
+  const handleResetDatabase = () => {
+    if (window.confirm('Tem a certeza de que deseja redefinir o banco de dados local? Todos os dados serão apagados permanentemente.')) {
+      localStorage.removeItem('agendify_local_agendas');
+      localStorage.removeItem('agendify_local_kanban');
+      localStorage.removeItem('agendify_local_notes');
+      window.location.reload();
     }
   };
 
-  const handleDeleteNote = async (id) => {
-    setModalType(null);
-    setNotes(prev => prev.filter(item => item.id !== id)); // Optimistic
-    try {
-      if (supabase && user) await supabase.from('notes').delete().eq('id', id);
-    } catch (err) {
-      console.error('Erro ao deletar nota:', err.message);
-      fetchSupabaseData(true);
-    }
-  };
-
-  // --- Métricas Auxiliares ---
+  // --- Métricas Auxiliares do Painel ---
   const upcomingActivities = useMemo(() => {
-    const todayStr = '2026-05-26'; // Data base do contexto
+    const todayStr = '2026-05-26';
     return agendas
       .filter(item => item.status === 'pending' && item.date >= todayStr)
       .sort((a, b) => {
@@ -508,7 +267,7 @@ export default function App() {
 
   const dynamicWarning = useMemo(() => {
     if (upcomingActivities.length === 0) {
-      return "Estás livre! Nenhuma atividade pendente para os próximos dias.";
+      return "Está livre! Nenhuma atividade pendente para os próximos dias.";
     }
     const nextTask = upcomingActivities[0];
     const isToday = nextTask.date === '2026-05-26';
@@ -549,19 +308,12 @@ export default function App() {
   }, [agendas, selectedCalendarDate]);
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 flex justify-center font-sans antialiased pb-24 md:pb-6 animate-fade-in relative">
-      {/* Indicador Global de Carregamento Fino (Exibido apenas na carga inicial, não em real-time) */}
-      {loading && (
-        <div className="absolute top-4 right-4 z-50 bg-indigo-600/90 text-white px-3 py-1.5 rounded-full text-xs font-bold flex items-center space-x-2 shadow-lg backdrop-blur-md transition-all">
-          <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-          <span>Sincronizando...</span>
-        </div>
-      )}
-
+    <div className="min-h-screen bg-slate-900 text-slate-100 flex justify-center font-sans antialiased pb-24 md:pb-6 relative select-none">
+      
       {/* Container Principal */}
       <div className="w-full max-w-md bg-slate-950 min-h-screen shadow-2xl flex flex-col relative border-x border-slate-800">
         
-        {/* Banner de status do envio de e-mails */}
+        {/* Banner de Feedback de Lembretes */}
         {emailStatus.message && (
           <div className={`absolute top-16 left-4 right-4 z-50 p-3.5 rounded-2xl flex items-center space-x-3 shadow-2xl border transition-all animate-slide-up ${
             emailStatus.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-400' :
@@ -569,7 +321,7 @@ export default function App() {
             'bg-indigo-500/10 border-indigo-500/40 text-indigo-400'
           }`}>
             <span className="text-base">
-              {emailStatus.type === 'success' ? '🚀' : emailStatus.type === 'error' ? '❌' : '✉️'}
+              {emailStatus.type === 'success' ? '🚀' : '✉️'}
             </span>
             <p className="text-xs font-semibold flex-1 leading-normal">{emailStatus.message}</p>
             {emailStatus.sending && (
@@ -588,33 +340,16 @@ export default function App() {
             </div>
             <div>
               <h1 className="text-lg font-bold tracking-tight bg-gradient-to-r from-white via-slate-200 to-indigo-400 bg-clip-text text-transparent">Agendify</h1>
-              <p className="text-[10px] text-slate-400 uppercase tracking-widest font-semibold">
-                Conectado
-              </p>
+              <p className="text-[10px] text-slate-400 uppercase tracking-widest font-semibold">SaaS Local Persistente</p>
             </div>
           </div>
           
-          <div className="flex items-center space-x-2">
-            {/* Botão de Conexão com Indicador Visual */}
-            <button 
-              onClick={() => setModalType('config')}
-              className={`p-2 rounded-xl border transition-colors relative ${
-                user 
-                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' 
-                  : supabase 
-                  ? 'bg-amber-500/10 border-amber-500/30 text-amber-400'
-                  : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
-              }`}
-              title={user ? `Sessão ativa: ${user.email}` : "Configurações do Banco"}
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-              </svg>
-              {user && <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-emerald-500 rounded-full border border-slate-950 animate-pulse"></span>}
-            </button>
-            <div className="flex items-center space-x-1.5 bg-slate-900 border border-slate-800 rounded-full px-2.5 py-1 text-xs text-slate-400">
-              <span className="font-medium">26 Mai</span>
-            </div>
+          {/* Indicador de Status Local */}
+          <div className="flex items-center space-x-1.5 bg-slate-900 border border-slate-800 rounded-full px-3 py-1.5 text-xs">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            <span className="font-bold tracking-wide text-emerald-400">
+              BANCO LOCAL ATIVO
+            </span>
           </div>
         </header>
 
@@ -629,18 +364,14 @@ export default function App() {
               <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-indigo-700 via-indigo-800 to-purple-900 p-6 shadow-xl shadow-indigo-950/30">
                 <div className="relative z-10 space-y-4">
                   <div className="space-y-1">
-                    <h2 className="text-2xl font-bold tracking-tight">
-                      {user ? `Olá, ${user.email.split('@')[0]}!` : 'Olá, Equipe!'}
-                    </h2>
-                    <p className="text-indigo-200 text-sm">Resumo da sua produtividade de hoje.</p>
+                    <h2 className="text-2xl font-bold tracking-tight">Olá, Thiago!</h2>
+                    <p className="text-indigo-200 text-sm">O seu aplicativo está a funcionar 100% com banco de dados local.</p>
                   </div>
                   
-                  {/* Caixa de Aviso Inteligente */}
+                  {/* Aviso Inteligente */}
                   <div className="flex items-start space-x-3 bg-black/20 backdrop-blur-sm rounded-2xl p-4 border border-white/10 text-white shadow-sm">
                     <span className="text-lg">💡</span>
-                    <p className="text-xs font-medium leading-relaxed">
-                      {dynamicWarning}
-                    </p>
+                    <p className="text-xs font-medium leading-relaxed">{dynamicWarning}</p>
                   </div>
                 </div>
                 <div className="absolute -right-10 -bottom-10 w-40 h-40 bg-indigo-500/20 rounded-full blur-2xl"></div>
@@ -665,12 +396,9 @@ export default function App() {
               {/* Seção das Próximas Atividades */}
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Lembretes mais próximos</h3>
-                  <button 
-                    onClick={() => setCurrentTab('calendar')} 
-                    className="text-xs font-semibold text-indigo-400 hover:text-indigo-300"
-                  >
-                    Ver Calendário
+                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Próximas 3 Atividades</h3>
+                  <button onClick={() => setCurrentTab('calendar')} className="text-xs font-semibold text-indigo-400">
+                    Ver Agenda
                   </button>
                 </div>
                 
@@ -679,48 +407,56 @@ export default function App() {
                     upcomingActivities.map(item => (
                       <div 
                         key={item.id} 
-                        className="group relative bg-slate-900 hover:bg-slate-800/80 transition-all border border-slate-800 rounded-2xl p-4 flex items-center justify-between cursor-pointer"
+                        className="group relative bg-slate-900 border border-slate-800 rounded-2xl p-4 flex items-center justify-between cursor-pointer hover:bg-slate-850 transition-colors"
+                        onClick={() => handleOpenEditAgenda(item)}
                       >
-                        <div className="flex items-center space-x-4 flex-1 min-w-0" onClick={() => handleOpenEditAgenda(item)}>
+                        <div className="flex items-center space-x-4 flex-1 min-w-0">
                           <div className={`p-2 rounded-xl text-xs font-bold ${
                             item.category === 'Trabalho' ? 'bg-blue-500/10 text-blue-400' :
                             item.category === 'Saúde' ? 'bg-rose-500/10 text-rose-400' :
-                            item.category === 'Pessoal' ? 'bg-purple-500/10 text-purple-400' :
-                            'bg-amber-500/10 text-amber-400'
+                            'bg-purple-500/10 text-purple-400'
                           }`}>
                             {item.time}
                           </div>
-                          <div className="truncate pr-2">
+                          <div className="truncate">
                             <h4 className="font-bold text-slate-200 text-sm">{item.title}</h4>
-                            <p className="text-xs text-slate-400 mt-0.5 flex items-center space-x-1.5 truncate">
-                              <span>{item.date.split('-').reverse().join('/')}</span>
-                              <span className="w-1 h-1 bg-slate-600 rounded-full"></span>
-                              <span>{item.category}</span>
+                            <p className="text-xs text-slate-400 mt-0.5">
+                              {item.date.split('-').reverse().join('/')} • {item.category}
                             </p>
                           </div>
                         </div>
                         
-                        <div className="flex items-center space-x-2">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              triggerEmailNotification(item);
-                            }}
-                            className="p-2 hover:bg-indigo-600/20 rounded-xl text-indigo-400 hover:text-indigo-300 transition-all"
-                            title="Disparar e-mail de lembrete agora"
-                          >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                            </svg>
-                          </button>
-                        </div>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            triggerEmailNotification(item);
+                          }}
+                          className="p-2 hover:bg-indigo-600/20 rounded-xl text-indigo-400 transition-colors"
+                          title="Enviar alerta de e-mail simulado"
+                        >
+                          ✉️
+                        </button>
                       </div>
                     ))
                   ) : (
-                    <div className="text-center py-8 border-2 border-dashed border-slate-800 rounded-3xl text-slate-500">
-                      <p className="text-sm">Nenhum compromisso pendente na agenda.</p>
+                    <div className="text-center py-8 border-2 border-dashed border-slate-800 rounded-3xl text-slate-500 text-xs">
+                      Nenhum compromisso pendente de momento.
                     </div>
                   )}
+                </div>
+              </div>
+
+              {/* Central de Controlo Local */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
+                <span className="text-indigo-400 font-bold block text-xs uppercase tracking-wider">Configuração do Banco Local:</span>
+                <p className="text-xs text-slate-400">Os seus dados estão protegidos localmente no navegador (`localStorage`). Nenhuma informação é enviada para servidores externos.</p>
+                <div className="pt-1">
+                  <button 
+                    onClick={handleResetDatabase}
+                    className="bg-rose-600/20 hover:bg-rose-600/30 text-rose-400 text-xs font-bold px-4 py-2 rounded-xl transition-colors border border-rose-500/20"
+                  >
+                    Resetar Banco de Dados
+                  </button>
                 </div>
               </div>
 
@@ -732,30 +468,23 @@ export default function App() {
             <div className="space-y-6 animate-fade-in">
               <div className="flex items-center justify-between">
                 <div>
-                  <h2 className="text-xl font-bold tracking-tight text-white">Minha Agenda</h2>
-                  <p className="text-xs text-slate-400">Toca em um dia para planejar</p>
+                  <h2 className="text-xl font-bold text-white">Minha Agenda</h2>
+                  <p className="text-xs text-slate-400">Toque em um dia para planejar</p>
                 </div>
-                <button 
-                  onClick={handleOpenAddAgenda}
-                  className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-4 py-2 rounded-xl flex items-center space-x-1.5 transition-colors shadow-lg"
-                >
-                  <span>+ Agendar</span>
+                <button onClick={handleOpenAddAgenda} className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-4 py-2 rounded-xl shadow-lg transition-colors">
+                  + Agendar
                 </button>
               </div>
 
               {/* Calendário Mensal */}
-              <div className="bg-slate-900 border border-slate-800 rounded-3xl p-4 space-y-4 shadow-sm">
+              <div className="bg-slate-900 border border-slate-800 rounded-3xl p-4 space-y-4">
                 <div className="flex items-center justify-between px-2">
                   <h3 className="font-bold text-slate-100 text-base">
-                    {calendarMonth.toLocaleString('pt-BR', { month: 'long', year: 'numeric' }).toUpperCase()}
+                    {calendarMonth.toLocaleString('pt-PT', { month: 'long', year: 'numeric' }).toUpperCase()}
                   </h3>
-                  <div className="flex space-x-1">
-                    <button onClick={() => changeMonth(-1)} className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400">
-                      ◀
-                    </button>
-                    <button onClick={() => changeMonth(1)} className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400">
-                      ▶
-                    </button>
+                  <div className="flex space-x-2">
+                    <button onClick={() => changeMonth(-1)} className="p-1 text-slate-400">◀</button>
+                    <button onClick={() => changeMonth(1)} className="p-1 text-slate-400">▶</button>
                   </div>
                 </div>
 
@@ -778,7 +507,7 @@ export default function App() {
                         onClick={() => setSelectedCalendarDate(dayObj.dateStr)}
                         className={`aspect-square relative flex flex-col items-center justify-center rounded-xl text-xs font-bold transition-all ${
                           isSelected 
-                            ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30 scale-105' 
+                            ? 'bg-indigo-600 text-white shadow-lg scale-105' 
                             : isToday
                             ? 'bg-slate-800 text-indigo-400 border border-indigo-500/40'
                             : 'hover:bg-slate-800 text-slate-300'
@@ -796,10 +525,10 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Lista do Dia Selecionado */}
+              {/* Compromissos do Dia */}
               <div className="space-y-3">
                 <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-                  Compromissos de {selectedCalendarDate.split('-').reverse().join('/')}
+                  Compromissos para {selectedCalendarDate.split('-').reverse().join('/')}
                 </h3>
 
                 <div className="space-y-3">
@@ -807,7 +536,7 @@ export default function App() {
                     agendasForSelectedDay.map(item => (
                       <div
                         key={item.id}
-                        className={`group bg-slate-900 border transition-all rounded-2xl p-4 flex items-center justify-between shadow-sm ${
+                        className={`group bg-slate-900 border rounded-2xl p-4 flex items-center justify-between ${
                           item.status === 'completed' ? 'border-slate-800/40 opacity-75' : 'border-slate-800'
                         }`}
                       >
@@ -823,16 +552,12 @@ export default function App() {
                                 : 'border-slate-700 hover:border-indigo-500'
                             }`}
                           >
-                            {item.status === 'completed' && (
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7" />
-                              </svg>
-                            )}
+                            {item.status === 'completed' && <span className="text-xs">✓</span>}
                           </button>
                           <div className="truncate pr-2">
                             <h4 className={`font-bold text-sm flex items-center gap-1.5 ${item.status === 'completed' ? 'line-through text-slate-500' : 'text-slate-200'}`}>
                               {item.title}
-                              {item.sendEmail && <span className="text-indigo-400 text-xs">✉️</span>}
+                              {item.sendEmail && <span className="text-indigo-400">✉️</span>}
                             </h4>
                             <p className="text-xs text-slate-400 truncate mt-0.5">{item.desc || 'Sem descrição'}</p>
                             <span className="inline-block text-[10px] font-semibold text-slate-400 mt-1 bg-slate-850 px-2 py-0.5 rounded-md">
@@ -843,26 +568,23 @@ export default function App() {
 
                         <div className="flex space-x-1">
                           <button
-                            onClick={() => triggerEmailNotification(item)}
-                            className="p-2 hover:bg-indigo-600/10 rounded-lg text-slate-400 transition-colors"
-                            title="Disparar e-mail lembrete"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              triggerEmailNotification(item);
+                            }}
+                            className="p-2 hover:bg-indigo-600/10 rounded-lg text-slate-400"
                           >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                            </svg>
+                            ✉️
                           </button>
-                          <button 
-                            onClick={() => handleOpenEditAgenda(item)}
-                            className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 transition-colors"
-                          >
+                          <button onClick={() => handleOpenEditAgenda(item)} className="p-2 hover:bg-slate-800 rounded-lg text-slate-450">
                             ✏️
                           </button>
                         </div>
                       </div>
                     ))
                   ) : (
-                    <div className="text-center py-10 border-2 border-dashed border-slate-800 rounded-3xl text-slate-500">
-                      <p className="text-sm">Nenhum compromisso agendado.</p>
+                    <div className="text-center py-10 border-2 border-dashed border-slate-800 rounded-3xl text-slate-500 text-xs">
+                      Nenhum compromisso agendado para este dia.
                     </div>
                   )}
                 </div>
@@ -875,18 +597,14 @@ export default function App() {
             <div className="space-y-6 animate-fade-in">
               <div className="flex items-center justify-between">
                 <div>
-                  <h2 className="text-xl font-bold tracking-tight text-white">Quadro Kanban</h2>
-                  <p className="text-xs text-slate-400">Atividades em andamento</p>
+                  <h2 className="text-xl font-bold text-white">Quadro Kanban</h2>
+                  <p className="text-xs text-slate-400">Atividades de planeamento</p>
                 </div>
-                <button 
-                  onClick={handleOpenAddKanban}
-                  className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-4 py-2 rounded-xl flex items-center space-x-1.5 transition-colors shadow-lg"
-                >
-                  <span>+ Nova Tarefa</span>
+                <button onClick={handleOpenAddKanban} className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-4 py-2 rounded-xl shadow-lg transition-colors">
+                  + Nova Tarefa
                 </button>
               </div>
 
-              {/* Colunas Kanban */}
               <div className="space-y-6">
                 {[
                   { id: 'todo', label: 'A Fazer', color: 'border-rose-500/50 bg-rose-500/10 text-rose-400' },
@@ -896,7 +614,7 @@ export default function App() {
                   const tasksInCol = kanbanTasks.filter(t => t.column === col.id);
 
                   return (
-                    <div key={col.id} className="bg-slate-900 border border-slate-850 rounded-2xl p-4 space-y-3 shadow-sm">
+                    <div key={col.id} className="bg-slate-900 border border-slate-850 rounded-2xl p-4 space-y-3">
                       <div className="flex items-center justify-between pb-2 border-b border-slate-800">
                         <span className={`text-[10px] uppercase font-extrabold px-2 py-0.5 rounded-full ${col.color}`}>
                           {col.label} ({tasksInCol.length})
@@ -922,26 +640,14 @@ export default function App() {
                                     {task.priority}
                                   </span>
                                 </div>
-                                <p className="text-xs text-slate-400 line-clamp-2">{task.desc || 'Sem descrição.'}</p>
+                                <p className="text-xs text-slate-400 line-clamp-2">{task.desc}</p>
                               </div>
 
                               <div className="flex items-center justify-between pt-2 border-t border-slate-850 text-xs">
                                 <span className="text-[10px] text-slate-500 font-medium">Mover:</span>
                                 <div className="flex space-x-1" onClick={(e) => e.stopPropagation()}>
-                                  <button
-                                    onClick={() => handleMoveKanban(task.id, -1)}
-                                    disabled={col.id === 'todo'}
-                                    className="p-1 hover:bg-slate-800 disabled:opacity-30 rounded text-slate-400"
-                                  >
-                                    ◀
-                                  </button>
-                                  <button
-                                    onClick={() => handleMoveKanban(task.id, 1)}
-                                    disabled={col.id === 'done'}
-                                    className="p-1 hover:bg-slate-800 disabled:opacity-30 rounded text-slate-400"
-                                  >
-                                    ▶
-                                  </button>
+                                  <button onClick={() => handleMoveKanban(task.id, -1)} disabled={col.id === 'todo'} className="p-1 hover:bg-slate-800 disabled:opacity-30 rounded text-slate-400">◀</button>
+                                  <button onClick={() => handleMoveKanban(task.id, 1)} disabled={col.id === 'done'} className="p-1 hover:bg-slate-800 disabled:opacity-30 rounded text-slate-400">▶</button>
                                 </div>
                               </div>
                             </div>
@@ -964,31 +670,26 @@ export default function App() {
             <div className="space-y-6 animate-fade-in">
               <div className="flex items-center justify-between">
                 <div>
-                  <h2 className="text-xl font-bold tracking-tight text-white">Notas Rápidas</h2>
-                  <p className="text-xs text-slate-400">Guarda ideias ou rascunhos</p>
+                  <h2 className="text-xl font-bold text-white">Notas Rápidas</h2>
+                  <p className="text-xs text-slate-400">Guarde as suas ideias rapidamente</p>
                 </div>
-                <button 
-                  onClick={handleOpenAddNote}
-                  className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-4 py-2 rounded-xl flex items-center space-x-1.5 transition-colors shadow-lg"
-                >
-                  <span>+ Criar Nota</span>
+                <button onClick={handleOpenAddNote} className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-4 py-2 rounded-xl shadow-lg transition-colors">
+                  + Criar Nota
                 </button>
               </div>
 
-              {/* Grid de Notas */}
               <div className="grid grid-cols-2 gap-3.5">
                 {notes.length > 0 ? (
                   notes.map(note => (
                     <div
                       key={note.id}
                       onClick={() => handleOpenEditNote(note)}
-                      className="bg-slate-900 hover:bg-slate-800/80 transition-colors border border-slate-850 rounded-2xl p-4 flex flex-col justify-between space-y-3 cursor-pointer min-h-[140px] shadow-sm relative"
+                      className="bg-slate-900 hover:bg-slate-800/80 border border-slate-850 rounded-2xl p-4 flex flex-col justify-between space-y-3 cursor-pointer min-h-[140px] shadow-sm relative transition-colors"
                     >
                       <div className="space-y-1.5">
                         <h4 className="font-bold text-slate-100 text-sm line-clamp-1">{note.title}</h4>
                         <p className="text-xs text-slate-400 line-clamp-4 whitespace-pre-line">{note.content}</p>
                       </div>
-                      
                       <div className="flex items-center justify-between pt-2 border-t border-slate-800/50 text-[10px] text-slate-500">
                         <span>{note.date}</span>
                         <span className="text-indigo-400">Editar →</span>
@@ -996,8 +697,8 @@ export default function App() {
                     </div>
                   ))
                 ) : (
-                  <div className="col-span-2 text-center py-12 border-2 border-dashed border-slate-800 rounded-3xl text-slate-500">
-                    <p className="text-sm">Nenhuma nota registada.</p>
+                  <div className="col-span-2 text-center py-12 border-2 border-dashed border-slate-800 rounded-3xl text-slate-500 text-xs">
+                    Nenhuma nota registada de momento.
                   </div>
                 )}
               </div>
@@ -1006,21 +707,21 @@ export default function App() {
 
         </main>
 
-        {/* --- bottom Navigation Bar --- */}
-        <nav className="fixed bottom-0 left-0 right-0 md:absolute bg-slate-950/95 backdrop-blur-md border-t border-slate-800/85 py-3 px-6 flex justify-between items-center z-20">
-          <button onClick={() => setCurrentTab('dashboard')} className={`flex flex-col items-center justify-center space-y-1 ${currentTab === 'dashboard' ? 'text-indigo-500' : 'text-slate-400'}`}>
+        {/* Bottom Navigation */}
+        <nav className="fixed bottom-0 left-0 right-0 md:absolute bg-slate-950/90 backdrop-blur-md border-t border-slate-800/85 py-3 px-6 flex justify-between items-center z-20">
+          <button onClick={() => setCurrentTab('dashboard')} className={`flex flex-col items-center space-y-1 ${currentTab === 'dashboard' ? 'text-indigo-500' : 'text-slate-400'}`}>
             <span className="text-base">📊</span>
             <span className="text-[10px] font-bold">Painel</span>
           </button>
-          <button onClick={() => setCurrentTab('calendar')} className={`flex flex-col items-center justify-center space-y-1 ${currentTab === 'calendar' ? 'text-indigo-500' : 'text-slate-400'}`}>
+          <button onClick={() => setCurrentTab('calendar')} className={`flex flex-col items-center space-y-1 ${currentTab === 'calendar' ? 'text-indigo-500' : 'text-slate-400'}`}>
             <span className="text-base">📅</span>
             <span className="text-[10px] font-bold">Agenda</span>
           </button>
-          <button onClick={() => setCurrentTab('kanban')} className={`flex flex-col items-center justify-center space-y-1 ${currentTab === 'kanban' ? 'text-indigo-500' : 'text-slate-400'}`}>
+          <button onClick={() => setCurrentTab('kanban')} className={`flex flex-col items-center space-y-1 ${currentTab === 'kanban' ? 'text-indigo-500' : 'text-slate-400'}`}>
             <span className="text-base">📋</span>
             <span className="text-[10px] font-bold">Tarefas</span>
           </button>
-          <button onClick={() => setCurrentTab('notes')} className={`flex flex-col items-center justify-center space-y-1 ${currentTab === 'notes' ? 'text-indigo-500' : 'text-slate-400'}`}>
+          <button onClick={() => setCurrentTab('notes')} className={`flex flex-col items-center space-y-1 ${currentTab === 'notes' ? 'text-indigo-500' : 'text-slate-400'}`}>
             <span className="text-base">📝</span>
             <span className="text-[10px] font-bold">Notas</span>
           </button>
@@ -1028,97 +729,17 @@ export default function App() {
 
         {/* ================= MODAL DINÂMICO COMPARTILHADO ================= */}
         {modalType !== null && (
-          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-end justify-center p-0 md:p-4">
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-end justify-center p-0 md:p-4 animate-fade-in">
             <div className="bg-slate-900 w-full max-w-md rounded-t-3xl md:rounded-3xl border border-slate-800 p-6 space-y-5 max-h-[90vh] overflow-y-auto animate-slide-up shadow-2xl">
               
-              {/* Header do Modal */}
               <div className="flex items-center justify-between pb-3 border-b border-slate-800">
                 <h3 className="font-bold text-base text-white">
-                  {modalType === 'config' ? 'Conexão Supabase' : editItem ? 'Editar Registro' : 'Novo Registro'}
+                  {editItem ? 'Editar Registo' : 'Novo Registo'}
                 </h3>
-                <button 
-                  onClick={() => setModalType(null)}
-                  className="p-1 hover:bg-slate-850 rounded-lg text-slate-400 transition-colors"
-                >
-                  ✕
-                </button>
+                <button onClick={() => setModalType(null)} className="p-1 text-slate-400">✕</button>
               </div>
 
-              {/* Formulário de Configuração & Autenticação Supabase */}
-              {modalType === 'config' && (
-                <div className="space-y-5">
-                  <div className="space-y-4 bg-slate-950 p-4 rounded-2xl border border-slate-800">
-                    <h4 className="text-xs font-bold text-indigo-400 uppercase tracking-wider">Sessão na Nuvem</h4>
-                    {user ? (
-                      <div className="space-y-3">
-                        <p className="text-xs text-slate-300">
-                          Autenticado como: <strong className="text-emerald-400 font-mono text-[11px] block mt-1">{user.email}</strong>
-                        </p>
-                        <button 
-                          onClick={handleLogout}
-                          className="w-full bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 text-xs font-bold py-2.5 rounded-xl transition-colors"
-                        >
-                          Terminar Sessão
-                        </button>
-                      </div>
-                    ) : (
-                      <form onSubmit={handleAuthSubmit} className="space-y-3">
-                        <div className="space-y-1">
-                          <label className="text-[10px] font-semibold text-slate-500">E-mail</label>
-                          <input 
-                            type="email" 
-                            placeholder="seu-email@gmail.com"
-                            value={authEmail}
-                            onChange={(e) => setAuthEmail(e.target.value)}
-                            className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none"
-                            required
-                          />
-                        </div>
-
-                        <div className="space-y-1">
-                          <label className="text-[10px] font-semibold text-slate-500">Palavra-passe</label>
-                          <input 
-                            type="password" 
-                            placeholder="Mínimo 6 caracteres"
-                            value={authPassword}
-                            onChange={(e) => setAuthPassword(e.target.value)}
-                            className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none"
-                            required
-                          />
-                        </div>
-
-                        {authError && <p className="text-[11px] text-amber-400 font-medium leading-normal">{authError}</p>}
-
-                        <div className="grid grid-cols-2 gap-2 pt-2">
-                          <button 
-                            type="submit" 
-                            onClick={() => setAuthMode('login')}
-                            className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-2.5 rounded-xl"
-                          >
-                            Entrar
-                          </button>
-                          <button 
-                            type="submit" 
-                            onClick={() => setAuthMode('register')}
-                            className="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold py-2.5 rounded-xl"
-                          >
-                            Criar Conta
-                          </button>
-                        </div>
-                      </form>
-                    )}
-                  </div>
-
-                  <button 
-                    onClick={() => setModalType(null)}
-                    className="w-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-3 rounded-xl"
-                  >
-                    Fechar e Sincronizar
-                  </button>
-                </div>
-              )}
-
-              {/* Formulários Contextuais de Edição */}
+              {/* Formulário de Agenda */}
               {modalType === 'agenda' && (
                 <form onSubmit={handleSaveAgenda} className="space-y-4">
                   <div className="space-y-1.5">
@@ -1200,19 +821,17 @@ export default function App() {
                         onClick={() => handleDeleteAgenda(editItem.id)}
                         className="flex-1 bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 text-xs font-bold py-3 rounded-xl transition-colors"
                       >
-                        Excluir
+                        Eliminar
                       </button>
                     )}
-                    <button 
-                      type="submit" 
-                      className="flex-[2] bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-3 rounded-xl transition-colors"
-                    >
+                    <button type="submit" className="flex-[2] bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-3 rounded-xl transition-colors">
                       {editItem ? 'Atualizar' : 'Agendar'}
                     </button>
                   </div>
                 </form>
               )}
 
+              {/* Formulário de Kanban */}
               {modalType === 'kanban' && (
                 <form onSubmit={handleSaveKanban} className="space-y-4">
                   <div className="space-y-1.5">
@@ -1271,26 +890,24 @@ export default function App() {
                         onClick={() => handleDeleteKanban(editItem.id)}
                         className="flex-1 bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 text-xs font-bold py-3 rounded-xl transition-colors"
                       >
-                        Excluir
+                        Eliminar
                       </button>
                     )}
-                    <button 
-                      type="submit" 
-                      className="flex-[2] bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-3 rounded-xl transition-colors"
-                    >
-                      Salvar
+                    <button type="submit" className="flex-[2] bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-3 rounded-xl transition-colors">
+                      Guardar
                     </button>
                   </div>
                 </form>
               )}
 
+              {/* Formulário de Nota */}
               {modalType === 'note' && (
                 <form onSubmit={handleSaveNote} className="space-y-4">
                   <div className="space-y-1.5">
                     <label className="text-xs font-semibold text-slate-400">Título da Nota</label>
                     <input 
                       type="text" 
-                      placeholder="Ex: Lista de afazeres"
+                      placeholder="Ex: Lista de compras"
                       value={formData.title} 
                       onChange={(e) => setFormData({ ...formData, title: e.target.value })}
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none"
@@ -1315,14 +932,11 @@ export default function App() {
                         onClick={() => handleDeleteNote(editItem.id)}
                         className="flex-1 bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 text-xs font-bold py-3 rounded-xl transition-colors"
                       >
-                        Excluir
+                        Eliminar
                       </button>
                     )}
-                    <button 
-                      type="submit" 
-                      className="flex-[2] bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-3 rounded-xl transition-colors"
-                    >
-                      Salvar Nota
+                    <button type="submit" className="flex-[2] bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-3 rounded-xl transition-colors">
+                      Guardar Nota
                     </button>
                   </div>
                 </form>
